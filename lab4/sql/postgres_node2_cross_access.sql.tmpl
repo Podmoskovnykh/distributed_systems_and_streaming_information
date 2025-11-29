@@ -1,0 +1,17 @@
+-- Предоставление доступа CrossUser из node1 к БД node2
+-- Этот скрипт должен выполняться на postgres_node2
+-- CrossUser из node1 (user_remote_node1) должен иметь доступ к sourcedb2
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ RemoteCrossUser }}') THEN
+        CREATE ROLE {{ RemoteCrossUser }} LOGIN PASSWORD '{{ RemoteCrossPass }}';
+    END IF;
+END$$;
+
+GRANT CONNECT ON DATABASE {{ DbName }} TO {{ RemoteCrossUser }};
+GRANT USAGE ON SCHEMA public TO {{ RemoteCrossUser }};
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {{ RemoteCrossUser }};
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {{ RemoteCrossUser }};
+

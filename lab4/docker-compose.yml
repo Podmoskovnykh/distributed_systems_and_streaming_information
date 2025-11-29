@@ -1,0 +1,310 @@
+version: "3.9"
+
+networks:
+  cluster1-net:
+    external: true
+  cluster2-net:
+    external: true
+  standalone1-net:
+    external: true
+  standalone2-net:
+    external: true
+  standalone3-net:
+    external: true
+
+volumes:
+  pgdata_first:
+  pgdata_second:
+  pgdata_replica:
+  mongo_data_node1:
+  mongo_data_node2:
+  mongo_data_replica1:
+  mongo_data_replica2:
+  mongo_data_replica3:
+
+services:
+  postgres_node1:
+    image: postgres:16
+    env_file:
+      - pg_first.env
+    networks:
+      - cluster1-net
+    volumes:
+      - pgdata_first:/var/lib/postgresql/data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d sourcedb1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres_node2:
+    image: postgres:16
+    env_file:
+      - pg_second.env
+    networks:
+      - cluster1-net
+    volumes:
+      - pgdata_second:/var/lib/postgresql/data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d sourcedb2"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres_replica:
+    image: postgres:16
+    env_file:
+      - pg_replication.env
+    networks:
+      - cluster1-net
+    volumes:
+      - pgdata_replica:/var/lib/postgresql/data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U replica -d replicadb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres_init:
+    image: postgres:16
+    networks:
+      - cluster1-net
+    volumes:
+      - ./setup_postgres.py:/setup_postgres.py:ro
+      - ./sql:/sql:ro
+      - ./pg_first.env:/pg_first.env:ro
+      - ./pg_second.env:/pg_second.env:ro
+      - ./init_db.sh:/init_db.sh:ro
+    command: >
+      bash -c "apt-get update && apt-get install -y python3 python3-pip && 
+      pip3 install -q --break-system-packages psycopg2-binary Jinja2 python-dotenv && 
+      bash /init_db.sh"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+    depends_on:
+      - postgres_node1
+      - postgres_node2
+
+  postgres_replication_job:
+    image: postgres:16
+    env_file:
+      - pg_first.env
+      - pg_replication.env
+    networks:
+      - cluster1-net
+    volumes:
+      - ./replicate.sh:/replicate.sh:ro
+    command: >
+      bash -c "while true; do bash /replicate.sh; sleep ${REPLICATION_INTERVAL_SECONDS:-30}; done"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    depends_on:
+      - postgres_node1
+      - postgres_node2
+      - postgres_replica
+
+  mongodb_node1:
+    image: mongo:4.4
+    networks:
+      - cluster2-net
+    volumes:
+      - mongo_data_node1:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=adminpass
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "27017:27017"
+    command: mongod --bind_ip_all
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb_node2:
+    image: mongo:4.4
+    networks:
+      - cluster2-net
+    volumes:
+      - mongo_data_node2:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=adminpass
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "27018:27017"
+    command: mongod --bind_ip_all
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb_init:
+    image: mongo:4.4
+    networks:
+      - cluster2-net
+    volumes:
+      - ./init_mongodb.sh:/init_mongodb.sh:ro
+      - ./setup_mongodb.py:/setup_mongodb.py:ro
+    command: >
+      bash -c "apt-get update -o Acquire::Check-Valid-Until=false 2>/dev/null || true && 
+      apt-get install -y --no-install-recommends python3 python3-pip && 
+      pip3 install -q pymongo && 
+      bash /init_mongodb.sh"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: none
+    depends_on:
+      - mongodb_node1
+      - mongodb_node2
+
+  mongodb_replica1:
+    image: mongo:4.4
+    networks:
+      - standalone1-net
+      - cluster2-net
+    volumes:
+      - mongo_data_replica1:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=adminpass
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "27019:27017"
+    command: mongod --bind_ip_all
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb_replica2:
+    image: mongo:4.4
+    networks:
+      - standalone2-net
+      - cluster2-net
+    volumes:
+      - mongo_data_replica2:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=adminpass
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "27020:27017"
+    command: mongod --bind_ip_all
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb_replica3:
+    image: mongo:4.4
+    networks:
+      - standalone3-net
+      - cluster2-net
+    volumes:
+      - mongo_data_replica3:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=adminpass
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "27021:27017"
+    command: mongod --bind_ip_all
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb_replication_setup:
+    image: mongo:4.4
+    networks:
+      - cluster2-net
+      - standalone1-net
+      - standalone2-net
+      - standalone3-net
+    volumes:
+      - ./setup_mongodb_replication.py:/setup_mongodb_replication.py:ro
+    command: >
+      bash -c "apt-get update -o Acquire::Check-Valid-Until=false 2>/dev/null || true && 
+      apt-get install -y --no-install-recommends python3 python3-pip && 
+      pip3 install -q pymongo && 
+      python3 /setup_mongodb_replication.py"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: none
+    depends_on:
+      - mongodb_node1
+      - mongodb_node2
+      - mongodb_replica1
+      - mongodb_replica2
+      - mongodb_replica3
+
+  mongodb_replication_sync:
+    image: mongo:4.4
+    networks:
+      - cluster2-net
+      - standalone1-net
+      - standalone2-net
+      - standalone3-net
+    volumes:
+      - ./sync_mongodb_replication.py:/sync_mongodb_replication.py:ro
+    command: >
+      bash -c "apt-get update -o Acquire::Check-Valid-Until=false 2>/dev/null || true && 
+      apt-get install -y --no-install-recommends python3 python3-pip && 
+      pip3 install -q pymongo && 
+      while true; do python3 /sync_mongodb_replication.py; sleep ${REPLICATION_INTERVAL_SECONDS:-10}; done"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    depends_on:
+      - mongodb_node1
+      - mongodb_node2
+      - mongodb_replica1
+      - mongodb_replica2
+      - mongodb_replica3
