@@ -1,0 +1,166 @@
+version: "3.9"
+
+networks:
+  cluster1-net:
+    external: true
+  cluster2-net:
+    external: true
+  standalone1-net:
+    external: true
+  standalone2-net:
+    external: true
+  standalone3-net:
+    external: true
+
+volumes:
+  pgdata_first:
+  pgdata_second:
+  pgdata_replica:
+
+services:
+  postgres_node1:
+    image: postgres:16
+    env_file:
+      - pg_first.env
+    networks:
+      - cluster1-net
+    volumes:
+      - pgdata_first:/var/lib/postgresql/data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d sourcedb1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres_node2:
+    image: postgres:16
+    env_file:
+      - pg_second.env
+    networks:
+      - cluster1-net
+    volumes:
+      - pgdata_second:/var/lib/postgresql/data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d sourcedb2"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres_replica:
+    image: postgres:16
+    env_file:
+      - pg_replication.env
+    networks:
+      - cluster1-net
+    volumes:
+      - pgdata_replica:/var/lib/postgresql/data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U replica -d replicadb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres_init:
+    image: postgres:16
+    networks:
+      - cluster1-net
+    volumes:
+      - ./setup_postgres.py:/setup_postgres.py:ro
+      - ./sql:/sql:ro
+      - ./pg_first.env:/pg_first.env:ro
+      - ./pg_second.env:/pg_second.env:ro
+      - ./init_db.sh:/init_db.sh:ro
+    command: >
+      bash -c "apt-get update && apt-get install -y python3 python3-pip && 
+      pip3 install -q --break-system-packages psycopg2-binary Jinja2 python-dotenv && 
+      bash /init_db.sh"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+    depends_on:
+      - postgres_node1
+      - postgres_node2
+
+  postgres_replication_job:
+    image: postgres:16
+    env_file:
+      - pg_first.env
+      - pg_replication.env
+    networks:
+      - cluster1-net
+    volumes:
+      - ./replicate.sh:/replicate.sh:ro
+    command: >
+      bash -c "while true; do bash /replicate.sh; sleep ${REPLICATION_INTERVAL_SECONDS:-30}; done"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    depends_on:
+      - postgres_node1
+      - postgres_node2
+      - postgres_replica
+
+  cluster2:
+    image: nginx:alpine
+    networks:
+      - cluster2-net
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "8082:80"
+
+  standalone1:
+    image: nginx:alpine
+    networks:
+      - standalone1-net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "8083:80"
+
+  standalone2:
+    image: nginx:alpine
+    networks:
+      - standalone2-net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "8084:80"
+
+  standalone3:
+    image: nginx:alpine
+    networks:
+      - standalone3-net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "8085:80"

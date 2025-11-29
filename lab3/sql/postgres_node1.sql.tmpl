@@ -1,0 +1,54 @@
+-- роли
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ LocalUser }}') THEN
+        CREATE ROLE {{ LocalUser }} LOGIN PASSWORD '{{ LocalPass }}';
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ CrossUser }}') THEN
+        CREATE ROLE {{ CrossUser }} LOGIN PASSWORD '{{ CrossPass }}';
+    END IF;
+END$$;
+
+-- таблицы
+CREATE TABLE IF NOT EXISTS customers (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id SERIAL PRIMARY KEY,
+    customer_id INT NOT NULL,
+    amount NUMERIC(10,2) NOT NULL,
+    created_at TIMESTAMP DEFAULT now()
+);
+
+-- случайные данные
+INSERT INTO customers(name)
+SELECT 'customer_' || i
+FROM generate_series(1,10) AS s(i)
+WHERE NOT EXISTS (SELECT 1 FROM customers);
+
+INSERT INTO orders(customer_id, amount)
+SELECT (random() * 9 + 1)::int,
+       (random() * 1000)::numeric(10,2)
+FROM generate_series(1,20) AS s(i)
+WHERE NOT EXISTS (SELECT 1 FROM orders);
+
+-- права для LocalUser (только своя БД)
+GRANT CONNECT ON DATABASE {{ DbName }} TO {{ LocalUser }};
+GRANT USAGE ON SCHEMA public TO {{ LocalUser }};
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {{ LocalUser }};
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {{ LocalUser }};
+
+-- права для CrossUser (своя БД)
+GRANT CONNECT ON DATABASE {{ DbName }} TO {{ CrossUser }};
+GRANT USAGE ON SCHEMA public TO {{ CrossUser }};
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {{ CrossUser }};
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {{ CrossUser }};
+
+-- CrossUser также должен иметь доступ к соседней БД (sourcedb2)
+-- Это будет настроено в postgres_node2, но здесь создаем пользователя для доступа
